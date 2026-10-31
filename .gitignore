@@ -1,0 +1,39 @@
+# Build and release outputs; never commit executable or archive files.
+/artifacts/
+*.exe
+*.dll
+*.pdb
+*.zip
+*.7z
+*.log
+*.tmp
+
+# Local credentials, accounts, configuration and diagnostic snapshots.
+.env
+.env.*
+auth.json
+credentials.json
+*secret*.json
+*.pem
+*.key
+/.codex/
+settings.json
+installation.json
+error.json
+diagnostics.json
+quota-probe.json
+live-state.json
+live-bar.png
+test-results.json
+ui-test-results.json
+ui-test-preview.png
+fixture-state.json
+
+# Editors and operating systems.
+/.vs/
+/.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
+.DS_Store
