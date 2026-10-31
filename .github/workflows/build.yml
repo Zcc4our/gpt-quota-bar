@@ -1,0 +1,29 @@
+name: Build and package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify and package offline
+        shell: powershell
+        run: .\scripts\package.ps1
+      - name: Upload release assets
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-assets
+          path: artifacts/releases/*
+          if-no-files-found: error
