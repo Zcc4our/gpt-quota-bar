@@ -4,6 +4,8 @@
 
 在 Windows 版 ChatGPT / Codex 桌面应用的顶部菜单空白处显示 Codex 订阅额度的独立小工具，非 OpenAI 官方扩展。
 
+当前版本仅支持windows系统下Plus订阅用户使用。
+
 ## 功能介绍
 
 ![深色和浅色显示示例，使用虚构数据](assets/preview.png)
