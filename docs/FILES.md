@@ -4,7 +4,7 @@
 
 | 路径 | 内容 |
 | --- | --- |
-| `src/GptQuotaBar.cs` | 当前 1.2.0 应用、额度协议和离线测试源码 |
+| `src/GptQuotaBar.cs` | 当前 1.3.0 应用、额度协议和离线测试源码 |
 | `src/app.manifest` | 版本、普通权限、DPI 和 Windows 兼容性声明 |
 | `scripts/*.ps1` | 构建、公开文件检查、验证、打包和交互测试 |
 | `scripts/*.cmd` | 运行包的启动、停止、安装和卸载模板 |
@@ -20,7 +20,7 @@
 
 ## 仅作为 GitHub Releases 附件
 
-- `GptQuotaBar-v1.2.0-windows-x64.zip`。
+- `GptQuotaBar-v1.3.0-windows-x64.zip`。
 - `SHA256SUMS.txt`。
 - `release-notes.md` 的内容粘贴为 Release 描述即可，无需作为附件。
 
@@ -32,7 +32,7 @@
 | --- | --- |
 | `auth.json`、`credentials.json`、`.env*`、私钥和任何 token / API Key | 登录凭据或密钥 |
 | `.codex/`、账号导出、浏览器配置、会话记录 | 账号和个人数据 |
-| `settings.json`、`installation.json` | 本机设置和安装路径 |
+| `settings.json`、`installation.json` | 本机设置与安装记录（安装记录不含程序路径） |
 | `quota-probe.json`、`live-state.json` | 真实额度、时间及窗口信息 |
 | `diagnostics.json`、`error.json`、日志 | 本机状态或潜在敏感信息 |
 | `live-bar.png`、真实桌面截图 | 真实额度或账号、聊天内容 |

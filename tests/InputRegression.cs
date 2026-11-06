@@ -102,7 +102,7 @@ static class InputRegression
             report.Add("reattach preserves foreground; unavailable host is ignored without a dialog");
             File.WriteAllText(args[1],Json.Serialize(new { passed=true,checks=report })); return 0;
         }
-        catch(Exception ex) { File.WriteAllText(args[1],Json.Serialize(new { passed=false,error=ex.ToString(),checks=report })); return 1; }
+        catch(Exception ex) { File.WriteAllText(args[1],Json.Serialize(new { passed=false,error=ex.GetType().Name,checks=report })); return 1; }
         finally
         {
             if(bar!=null)bar.Dispose();

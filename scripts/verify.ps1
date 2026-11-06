@@ -18,5 +18,5 @@ if (Test-Path -LiteralPath $resultPath) { Remove-Item -LiteralPath $resultPath }
 $process = Start-Process -FilePath $binary -ArgumentList '--self-test' -WindowStyle Hidden -PassThru -Wait
 if ($process.ExitCode -ne 0 -or !(Test-Path -LiteralPath $resultPath)) { throw 'Offline self-test failed.' }
 $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-if ($result.failed -ne 0 -or $result.passed -lt 25) { throw 'Unexpected self-test result.' }
+if ($result.failed -ne 0 -or $result.passed -lt 59) { throw 'Unexpected self-test result.' }
 Write-Host "Verified v$version : $($result.passed) offline assertions passed."

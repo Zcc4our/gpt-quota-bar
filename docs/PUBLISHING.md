@@ -42,13 +42,13 @@ git push -u origin main
 2. 推送版本标签：
 
    ```powershell
-   git tag -a v1.2.0 -m "GPT Quota Bar v1.2.0"
-   git push origin v1.2.0
+   git tag -a v1.3.0 -m "GPT Quota Bar v1.3.0"
+   git push origin v1.3.0
    ```
 
 3. 等待 GitHub Actions 的 `Build and package` 成功。CI 上传 `release-assets` 构建产物，包含运行包、校验值和说明。下载 artifact 后先解开外层归档。
-4. 在 GitHub **Releases → Draft a new release**，选择 `v1.2.0`，标题填写 `GPT Quota Bar v1.2.0`，说明使用 `docs/RELEASE_NOTES.md`。
-5. 附加 **内层的** `GptQuotaBar-v1.2.0-windows-x64.zip` 和同一次构建的 `SHA256SUMS.txt`，检查后发布。不要上传 artifact 外层归档或整份安装目录。
+4. 在 GitHub **Releases → Draft a new release**，选择 `v1.3.0`，标题填写 `GPT Quota Bar v1.3.0`，说明使用 `docs/RELEASE_NOTES.md`。
+5. 附加 **内层的** `GptQuotaBar-v1.3.0-windows-x64.zip` 和同一次构建的 `SHA256SUMS.txt`，检查后发布。不要上传 artifact 外层归档或整份安装目录。
 
 也可以直接上传本机 `artifacts/releases/` 的 ZIP 和配套校验值。必须使用同一次构建的两个文件；GitHub 自动提供的源码 ZIP 不包含可执行程序。
 

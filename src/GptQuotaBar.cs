@@ -20,6 +20,7 @@ namespace GptQuotaBar
     static class Program
     {
         internal static readonly string Folder = AppDomain.CurrentDomain.BaseDirectory;
+        internal static readonly string DataFolder = InitDataFolder();
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "GPT Quota Bar";
         internal static readonly EventWaitHandle Stop = new EventWaitHandle(false, EventResetMode.ManualReset, @"Local\GptQuotaBar.Stop");
@@ -73,10 +74,20 @@ namespace GptQuotaBar
                 return 1;
             }
         }
-        internal static void Save(string name, object value)
+        static string InitDataFolder()
         {
-            File.WriteAllText(Path.Combine(Folder, name), Json.Encode(value), new UTF8Encoding(false));
+            try {
+                string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GptQuotaBar");
+                Directory.CreateDirectory(folder);
+                string oldFile = Path.Combine(Folder, "settings.json"), newFile = Path.Combine(folder, "settings.json");
+                if (!File.Exists(newFile) && File.Exists(oldFile) && !string.Equals(oldFile, newFile, StringComparison.OrdinalIgnoreCase)) {
+                    try { File.Copy(oldFile, newFile); File.Delete(oldFile); } catch { }
+                }
+                return folder;
+            } catch { return Folder; }
         }
+        internal static void Save(string name, object value) { File.WriteAllText(Path.Combine(DataFolder, name), Json.Encode(value), new UTF8Encoding(false)); }
+        internal static void SaveBeside(string name, object value) { File.WriteAllText(Path.Combine(Folder, name), Json.Encode(value), new UTF8Encoding(false)); }
         static async Task Probe()
         {
             using (var client = new QuotaClient())
@@ -118,7 +129,7 @@ namespace GptQuotaBar
             dynamic folder = service.GetFolder("\\");
             dynamic registered = folder.RegisterTaskDefinition(Name, task, 6, user, null, 3, null);
             registered.Run(null);
-            Program.Save("installation.json", new { mechanism = "Windows Task Scheduler", task = Name, executable = Application.ExecutablePath });
+            Program.Save("installation.json", new { mechanism = "Windows Task Scheduler", task = Name, version = "1.3.0" });
         }
         internal static void Remove()
         {
@@ -137,6 +148,20 @@ namespace GptQuotaBar
         internal static Dictionary<string, object> Obj(Dictionary<string, object> obj, string key) { return Get(obj, key) as Dictionary<string, object>; }
     }
 
+    static class Settings
+    {
+        internal static bool Light, Notify = true;
+        static Settings()
+        {
+            try {
+                var data = Json.Decode(File.ReadAllText(Path.Combine(Program.DataFolder, "settings.json")));
+                if (Json.Get(data, "light") is bool) Light = (bool)data["light"];
+                if (Json.Get(data, "notify") is bool) Notify = (bool)data["notify"];
+            } catch { }
+        }
+        internal static void Save() { Program.Save("settings.json", new { light = Light, notify = Notify }); }
+    }
+
     sealed class QuotaWindow
     {
         internal int Minutes;
@@ -149,32 +174,66 @@ namespace GptQuotaBar
 
     sealed class Snapshot
     {
-        internal QuotaWindow Five, Week;
+        internal readonly List<QuotaWindow> Windows = new List<QuotaWindow>();
+        internal QuotaWindow Five { get { return Windows.FirstOrDefault(w => w.Minutes == 300); } }
+        internal QuotaWindow Week { get { return Windows.FirstOrDefault(w => w.Minutes == 10080); } }
         internal DateTimeOffset At = DateTimeOffset.Now;
         internal string Plan;
+        internal bool HasCredits, Unlimited;
+        internal string Balance;
+        internal bool Empty { get { return Windows.Count == 0 && !HasCredits && !Unlimited; } }
+        internal bool CreditsOnly { get { return Windows.Count == 0 && (HasCredits || Unlimited); } }
+        internal string PlanName
+        {
+            get {
+                switch (Plan) {
+                    case "free": return "Free"; case "go": return "Go"; case "plus": return "Plus";
+                    case "pro": return "Pro"; case "team": return "Team"; case "business": return "Business";
+                    case "enterprise": return "Enterprise"; case "edu": return "Edu"; default: return "";
+                }
+            }
+        }
+        internal static string PeriodLabel(int minutes)
+        {
+            if (minutes <= 0) return "";
+            if (minutes % 1440 == 0) return (minutes / 1440).ToString(CultureInfo.InvariantCulture) + "d";
+            if (minutes % 60 == 0) return (minutes / 60).ToString(CultureInfo.InvariantCulture) + "h";
+            return minutes.ToString(CultureInfo.InvariantCulture) + "min";
+        }
         internal static Snapshot Parse(Dictionary<string, object> result)
         {
-            var buckets = Json.Obj(result, "rateLimitsByLimitId");
-            var bucket = buckets != null ? Json.Obj(buckets, "codex") : Json.Obj(result, "rateLimits");
+            bool hasBuckets = result != null && result.ContainsKey("rateLimitsByLimitId");
+            object rawBuckets = Json.Get(result, "rateLimitsByLimitId");
+            var buckets = rawBuckets as Dictionary<string, object>;
+            var bucket = hasBuckets ? Json.Obj(buckets, "codex") : Json.Obj(result, "rateLimits");
             // An explicit multi-bucket response without codex must never select another model's quota.
-            var snapshot = new Snapshot { Plan = Convert.ToString(Json.Get(bucket, "planType")) };
+            string plan = Convert.ToString(Json.Get(bucket, "planType"), CultureInfo.InvariantCulture).ToLowerInvariant();
+            var snapshot = new Snapshot { Plan = System.Text.RegularExpressions.Regex.IsMatch(plan, "^[a-z0-9_-]{1,24}$") ? plan : "" };
+            var credits = Json.Obj(bucket, "credits");
+            snapshot.HasCredits = Json.Get(credits, "hasCredits") is bool && (bool)credits["hasCredits"];
+            snapshot.Unlimited = Json.Get(credits, "unlimited") is bool && (bool)credits["unlimited"];
+            string balance = Convert.ToString(Json.Get(credits, "balance"), CultureInfo.InvariantCulture);
+            if (balance.Length <= 12 && System.Text.RegularExpressions.Regex.IsMatch(balance, "^[0-9]+(\\.[0-9]+)?$")) snapshot.Balance = balance;
             foreach (string name in new[] { "primary", "secondary" })
             {
                 var w = Json.Obj(bucket, name);
                 if (w == null || Json.Get(w, "usedPercent") == null || Json.Get(w, "windowDurationMins") == null) continue;
-                double used = Convert.ToDouble(w["usedPercent"], CultureInfo.InvariantCulture);
-                if (double.IsNaN(used) || double.IsInfinity(used)) continue;
-                var window = new QuotaWindow { Minutes = Convert.ToInt32(w["windowDurationMins"]), Used = used,
-                    Reset = Json.Get(w, "resetsAt") == null ? 0 : Convert.ToInt64(w["resetsAt"]) };
-                if (window.Minutes == 300) snapshot.Five = window;
-                if (window.Minutes == 10080) snapshot.Week = window;
+                try {
+                    double used = Convert.ToDouble(w["usedPercent"], CultureInfo.InvariantCulture);
+                    int minutes = Convert.ToInt32(w["windowDurationMins"], CultureInfo.InvariantCulture);
+                    if (double.IsNaN(used) || double.IsInfinity(used) || minutes <= 0 || snapshot.Windows.Any(x => x.Minutes == minutes)) continue;
+                    snapshot.Windows.Add(new QuotaWindow { Minutes = minutes, Used = used,
+                        Reset = Json.Get(w, "resetsAt") == null ? 0 : Convert.ToInt64(w["resetsAt"], CultureInfo.InvariantCulture) });
+                } catch (FormatException) { } catch (OverflowException) { } catch (InvalidCastException) { }
             }
+            snapshot.Windows.Sort((a, b) => a.Minutes.CompareTo(b.Minutes));
             return snapshot;
         }
         internal object Export()
         {
             return new { plan = Plan, updatedAt = At.ToString("o"), source = "codex app-server account/rateLimits/read",
-                windows = new[] { Five, Week }.Where(w => w != null).Select(w => new {
+                credits = new { hasCredits = HasCredits, unlimited = Unlimited, balance = Balance },
+                windows = Windows.Select(w => new {
                     durationMinutes = w.Minutes, usedPercent = w.Used, remainingPercent = w.Remaining, resetsAt = w.Reset }).ToArray() };
         }
     }
@@ -183,6 +242,79 @@ namespace GptQuotaBar
     {
         internal int Code;
         internal RpcFailure(int code) { Code = code; }
+    }
+
+    static class ChildJob
+    {
+        [StructLayout(LayoutKind.Sequential)] struct BasicLimits {
+            internal long ProcessTime, JobTime; internal uint Flags; internal UIntPtr MinWorking, MaxWorking;
+            internal uint Active; internal UIntPtr Affinity; internal uint Priority, Scheduling;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct IoCounters {
+            internal ulong ReadOps, WriteOps, OtherOps, ReadBytes, WriteBytes, OtherBytes;
+        }
+        [StructLayout(LayoutKind.Sequential)] struct ExtendedLimits {
+            internal BasicLimits Basic; internal IoCounters Io; internal UIntPtr ProcessMemory, JobMemory, PeakProcess, PeakJob;
+        }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+        static readonly IntPtr Job = Create();
+        static IntPtr Create()
+        {
+            IntPtr job = IntPtr.Zero, buffer = IntPtr.Zero;
+            try {
+                job = CreateJobObject(IntPtr.Zero, null);
+                if (job == IntPtr.Zero) return IntPtr.Zero;
+                var limits = new ExtendedLimits(); limits.Basic.Flags = 0x2000;
+                int size = Marshal.SizeOf(typeof(ExtendedLimits)); buffer = Marshal.AllocHGlobal(size);
+                Marshal.StructureToPtr(limits, buffer, false);
+                if (SetInformationJobObject(job, 9, buffer, (uint)size)) return job;
+            } catch { }
+            finally { if (buffer != IntPtr.Zero) Marshal.FreeHGlobal(buffer); }
+            if (job != IntPtr.Zero) CloseHandle(job);
+            return IntPtr.Zero;
+        }
+        internal static void Assign(Process process) { try { if (Job != IntPtr.Zero) AssignProcessToJobObject(Job, process.Handle); } catch { } }
+    }
+
+    sealed class CodexExecutable
+    {
+        internal string Path, Tier;
+        internal CodexExecutable(string path, string tier) { Path = path; Tier = tier; }
+    }
+    sealed class UntrustedPathException : Exception { }
+    static class ExecutableTrust
+    {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct FileInfoData {
+            internal uint Size; internal string FilePath; internal IntPtr FileHandle, KnownSubject;
+        }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct TrustData {
+            internal uint Size; internal IntPtr PolicyCallback, SipClient; internal uint UiChoice, RevocationChecks, UnionChoice;
+            internal IntPtr FileInfo; internal uint StateAction; internal IntPtr StateData, UrlReference; internal uint ProviderFlags, UiContext;
+            internal IntPtr SignatureSettings;
+        }
+        [DllImport("wintrust.dll", ExactSpelling = true, CharSet = CharSet.Unicode)] static extern int WinVerifyTrust(IntPtr hwnd, [In] ref Guid action, ref TrustData data);
+        internal static bool Verify(string path)
+        {
+            IntPtr file = IntPtr.Zero; var data = new TrustData();
+            Guid action = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+            try {
+                var info = new FileInfoData { Size = (uint)Marshal.SizeOf(typeof(FileInfoData)), FilePath = path };
+                file = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(FileInfoData)));
+                Marshal.StructureToPtr(info, file, false);
+                data.Size = (uint)Marshal.SizeOf(typeof(TrustData)); data.UiChoice = 2; data.UnionChoice = 1;
+                data.FileInfo = file; data.StateAction = 1; data.ProviderFlags = 0x1010;
+                if (WinVerifyTrust(new IntPtr(-1), ref action, ref data) != 0) return false;
+                using (var certificate = System.Security.Cryptography.X509Certificates.X509Certificate.CreateFromSignedFile(path))
+                    return certificate.Subject.IndexOf("OpenAI", StringComparison.OrdinalIgnoreCase) >= 0;
+            } catch { return false; }
+            finally {
+                if (data.StateData != IntPtr.Zero) { data.StateAction = 2; try { WinVerifyTrust(new IntPtr(-1), ref action, ref data); } catch { } }
+                if (file != IntPtr.Zero) { Marshal.DestroyStructure(file, typeof(FileInfoData)); Marshal.FreeHGlobal(file); }
+            }
+        }
     }
 
     sealed class QuotaClient : IDisposable
@@ -198,16 +330,17 @@ namespace GptQuotaBar
         internal event Action AccountChanged;
         internal async Task Start()
         {
-            string exe = FindCodex();
-            child = Process.Start(new ProcessStartInfo(exe, "app-server") {
+            CodexExecutable exe = FindCodex();
+            child = Process.Start(new ProcessStartInfo(exe.Path, "app-server") {
                 UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
                 StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
                 WorkingDirectory = Program.Folder });
+            ChildJob.Assign(child);
             new Thread(ReadLoop) { IsBackground = true }.Start();
             Process started = child;
             new Thread((ThreadStart)delegate { try { while (started.StandardError.ReadLine() != null) { } } catch { } }) { IsBackground = true }.Start();
-            await Rpc("initialize", new { clientInfo = new { name = "gpt_quota_bar", title = "GPT Quota Bar", version = "1.2.0" } });
+            await Rpc("initialize", new { clientInfo = new { name = "gpt_quota_bar", title = "GPT Quota Bar", version = "1.3.0" } });
             Send(new { method = "initialized", @params = new { } });
         }
         internal async Task<Snapshot> Read()
@@ -237,6 +370,7 @@ namespace GptQuotaBar
                 string line;
                 while (!disposed && (line = child.StandardOutput.ReadLine()) != null)
                 {
+                    try {
                     var message = Json.Decode(line);
                     object idValue = Json.Get(message, "id");
                     string method = Convert.ToString(Json.Get(message, "method"));
@@ -258,6 +392,7 @@ namespace GptQuotaBar
                     }
                     else if (idValue != null && method.Length > 0)
                         Send(new { id = idValue, error = new { code = -32601, message = "Unsupported read-only client request" } });
+                    } catch { }
                 }
             }
             catch { }
@@ -289,23 +424,33 @@ namespace GptQuotaBar
                 child.StandardInput.Flush();
             }
         }
-        internal static string FindCodex()
+        internal static CodexExecutable FindCodex()
         {
-            var candidates = new List<string>();
             string configured = Environment.GetEnvironmentVariable("GPT_QUOTA_CODEX_PATH");
-            if (!string.IsNullOrWhiteSpace(configured)) candidates.Add(configured);
+            if (!string.IsNullOrWhiteSpace(configured) && string.Equals(Path.GetFileName(configured), "codex.exe", StringComparison.OrdinalIgnoreCase) && File.Exists(configured)) return new CodexExecutable(configured, "Configured");
             // Prefer the current desktop bundle, so its credential handling matches the host.
             foreach (string name in new[] { "ChatGPT", "Codex" })
                 foreach (var p in Process.GetProcessesByName(name))
-                    using (p) try { candidates.Add(Path.Combine(Path.GetDirectoryName(p.MainModule.FileName), "resources", "codex.exe")); } catch { }
+                    using (p) try {
+                        string host = p.MainModule.FileName;
+                        bool desktop = name == "ChatGPT" || Directory.Exists(Path.Combine(Path.GetDirectoryName(host), "resources"));
+                        string candidate = Path.Combine(Path.GetDirectoryName(host), "resources", "codex.exe");
+                        if (desktop && host.IndexOf("OpenAI", StringComparison.OrdinalIgnoreCase) >= 0 && File.Exists(candidate)) return new CodexExecutable(candidate, "DesktopBundle");
+                    } catch { }
             string local = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenAI", "Codex", "bin");
             if (Directory.Exists(local))
-                foreach (string dir in Directory.GetDirectories(local).OrderByDescending(Directory.GetLastWriteTimeUtc)) candidates.Add(Path.Combine(dir, "codex.exe"));
+                foreach (string dir in Directory.GetDirectories(local).OrderByDescending(Directory.GetLastWriteTimeUtc)) {
+                    string candidate = Path.Combine(dir, "codex.exe");
+                    if (File.Exists(candidate)) return new CodexExecutable(candidate, "LocalInstall");
+                }
+            bool rejected = false;
             foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
-                if (dir.Length > 0) candidates.Add(Path.Combine(dir.Trim('"'), "codex.exe"));
-            string found = candidates.FirstOrDefault(File.Exists);
-            if (found == null) throw new FileNotFoundException("codex.exe");
-            return found;
+                if (dir.Length > 0) try {
+                    string candidate = Path.Combine(dir.Trim('"'), "codex.exe");
+                    if (File.Exists(candidate)) { if (ExecutableTrust.Verify(candidate)) return new CodexExecutable(candidate, "Path"); rejected = true; }
+                } catch { }
+            if (rejected) throw new UntrustedPathException();
+            throw new FileNotFoundException("codex.exe");
         }
         public void Dispose()
         {
@@ -355,12 +500,22 @@ namespace GptQuotaBar
                         {
                             client = new QuotaClient();
                             client.Changed += delegate(Snapshot s, string status) {
+                                if (s != null && s.Empty) { Raise(null, "未读取到 Codex 额度（套餐或接口可能不支持）"); Refresh(); return; }
                                 Raise(s, status);
                             };
                             client.AccountChanged += Refresh;
                             client.Start().GetAwaiter().GetResult();
                         }
                         Snapshot snapshot = client.Read().GetAwaiter().GetResult();
+                        if (snapshot.Empty) {
+                            Raise(null, "正在重新读取额度");
+                            Thread.Sleep(1000); if (stopping) break;
+                            snapshot = client.Read().GetAwaiter().GetResult();
+                            if (snapshot.Empty) {
+                                Raise(null, "未读取到 Codex 额度（套餐或接口可能不支持）");
+                                last = DateTime.UtcNow; retry = last.AddSeconds(120); continue;
+                            }
+                        }
                         Raise(snapshot, ""); failures = 0; retry = DateTime.MinValue;
                     }
                     catch (RpcFailure ex)
@@ -369,6 +524,11 @@ namespace GptQuotaBar
                         if (ex.Code == 401 || ex.Code == 403) Raise(null, "请重新登录 ChatGPT 账户");
                         else Raise(null, "额度读取失败，稍后重试");
                         retry = DateTime.UtcNow.AddSeconds(ex.Code == 401 || ex.Code == 403 ? 300 : Math.Min(300, 30 * failures));
+                    }
+                    catch (UntrustedPathException)
+                    {
+                        Raise(null, "PATH 中的 codex.exe 未通过 OpenAI 签名校验，已忽略");
+                        retry = DateTime.UtcNow.AddSeconds(300);
                     }
                     catch
                     {
@@ -401,6 +561,10 @@ namespace GptQuotaBar
         bool lastVisible;
         DateTime repaintAt;
         bool disposed;
+        readonly HashSet<long> refreshedResets = new HashSet<long>();
+        readonly HashSet<string> notifiedWindows = new HashSet<string>();
+        DateTime lastResetRefresh = DateTime.MinValue;
+        internal static string LimitTrayText(string text) { return text.Length <= 127 ? text : text.Substring(0, 127); }
         internal BarContext()
         {
             bar = new BarForm();
@@ -414,12 +578,20 @@ namespace GptQuotaBar
                     // Fail closed: unknown identity, unavailable connection and failed reads clear values.
                     else bar.Data = null;
                     bar.Status = status; bar.Invalidate();
-                    tray.Text = s == null ? "GPT 额度栏 · " + status : TrayText(s);
+                    tray.Text = LimitTrayText(s == null ? "GPT 额度栏 · " + status : TrayText(s));
+                    if (s != null && Settings.Notify) foreach (var w in s.Windows) {
+                        string key = w.Minutes.ToString(CultureInfo.InvariantCulture) + ":" + w.Reset.ToString(CultureInfo.InvariantCulture);
+                        if (!w.Expired(DateTimeOffset.Now) && w.Remaining <= 10 && notifiedWindows.Add(key))
+                            tray.ShowBalloonTip(5000, "额度提醒", Snapshot.PeriodLabel(w.Minutes) + " 剩余 " + w.Display(DateTimeOffset.Now), ToolTipIcon.Warning);
+                    }
                 }, null); } catch (InvalidOperationException) { }
             };
             var menu = new ContextMenuStrip();
             menu.Items.Add("立即刷新", null, delegate { poller.Refresh(); });
             menu.Items.Add("切换深色 / 浅色", null, delegate { bar.Light = !bar.Light; bar.SaveTheme(); bar.Invalidate(); });
+            var notifyItem = new ToolStripMenuItem("低额度提醒") { Checked = Settings.Notify, CheckOnClick = true };
+            notifyItem.CheckedChanged += delegate { Settings.Notify = notifyItem.Checked; Settings.Save(); };
+            menu.Items.Add(notifyItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("退出额度栏", null, delegate { ExitThread(); });
             icon = Renderer.MakeIcon();
@@ -431,6 +603,10 @@ namespace GptQuotaBar
         void Tick(object sender, EventArgs args)
         {
             if (Program.Stop.WaitOne(0)) { ExitThread(); return; }
+            if (bar.Data != null && (DateTime.UtcNow - lastResetRefresh).TotalSeconds >= 20) {
+                var expired = bar.Data.Windows.FirstOrDefault(w => w.Expired(DateTimeOffset.Now) && !refreshedResets.Contains(w.Reset));
+                if (expired != null) { refreshedResets.Add(expired.Reset); lastResetRefresh = DateTime.UtcNow; poller.Refresh(); }
+            }
             if (DateTime.UtcNow >= discoverAt)
             {
                 targets = Native.FindTargets(out desktopRunning);
@@ -466,15 +642,19 @@ namespace GptQuotaBar
                     host = bar.Host.ToInt64(), screenBounds = bar.IsHandleCreated ? Native.ScreenBounds(bar.Handle).ToString() : "",
                     status = bar.Status, quota = bar.Data == null ? null : bar.Data.Export() });
                 if (bar.IsHandleCreated) using (var bitmap = new Bitmap(bar.ClientSize.Width, bar.ClientSize.Height)) {
-                    bar.DrawToBitmap(bitmap, bar.ClientRectangle); bitmap.Save(Path.Combine(Program.Folder, "live-bar.png"));
+                    bar.DrawToBitmap(bitmap, bar.ClientRectangle); bitmap.Save(Path.Combine(Program.DataFolder, "live-bar.png"));
                 }
             }
         }
         static string TrayText(Snapshot snapshot)
         {
-            return string.Join("\n", new[] { new { Label = "5h", Value = snapshot.Five }, new { Label = "7d", Value = snapshot.Week } }.Select(p =>
-                p.Label + " " + Renderer.Value(p.Value) + (p.Value != null && p.Value.Reset > 0
-                    ? " · 重置 " + DateTimeOffset.FromUnixTimeSeconds(p.Value.Reset).ToLocalTime().ToString("MM-dd HH:mm") : "")));
+            var lines = new List<string>();
+            if (snapshot.PlanName.Length > 0) lines.Add(snapshot.PlanName);
+            foreach (var w in snapshot.Windows)
+                lines.Add(Snapshot.PeriodLabel(w.Minutes) + " " + Renderer.Value(w) + (w.Reset > 0
+                    ? " · 重置 " + DateTimeOffset.FromUnixTimeSeconds(w.Reset).ToLocalTime().ToString("MM-dd HH:mm") : ""));
+            if (snapshot.CreditsOnly) lines.Add(snapshot.Unlimited ? "积分 无限" : snapshot.Balance == null ? "积分 可用" : "积分 余额 " + snapshot.Balance);
+            return string.Join("\n", lines);
         }
         protected override void ExitThreadCore() { Dispose(); base.ExitThreadCore(); }
         protected override void Dispose(bool disposing)
@@ -501,7 +681,7 @@ namespace GptQuotaBar
             DoubleBuffered = true; Text = "GPT Quota Bar";
             SetStyle(ControlStyles.ResizeRedraw, true);
             SetStyle(ControlStyles.Selectable, false); TabStop = false;
-            try { var s = Json.Decode(File.ReadAllText(Path.Combine(Program.Folder, "settings.json"))); Light = Convert.ToBoolean(Json.Get(s, "light")); } catch { }
+            Light = Settings.Light;
         }
         protected override bool ShowWithoutActivation { get { return true; } }
         protected override CreateParams CreateParams
@@ -546,7 +726,7 @@ namespace GptQuotaBar
             if (m.Msg == 0x0084) { m.Result = new IntPtr(-1); return; }
             base.WndProc(ref m);
         }
-        internal void SaveTheme() { Program.Save("settings.json", new { light = Light }); }
+        internal void SaveTheme() { Settings.Light = Light; Settings.Save(); }
         protected override void OnPaint(PaintEventArgs e)
         {
             Renderer.Paint(e.Graphics, ClientSize.Width / ScaleFactor, ClientSize.Height / ScaleFactor, ScaleFactor, Data, Status, Light);
@@ -581,18 +761,35 @@ namespace GptQuotaBar
                 float center = baseline - 5;
                 const float gap = 12, padding = 8, separatorWidth = 1, dotWidth = 4;
                 DateTimeOffset now = DateTimeOffset.Now;
-                var windows = new[] { data == null ? null : data.Five, data == null ? null : data.Week };
-                var periods = new[] { "5h", "7d" };
-                var labels = windows.Select((w, i) => Countdown(w, now) + "/" + periods[i]).ToArray();
+                var windows = data == null ? new QuotaWindow[] { null, null } : data.Windows.ToArray();
+                var labels = windows.Select((w, i) => Countdown(w, now) + "/" + (w == null ? (i == 0 ? "5h" : "7d") : Snapshot.PeriodLabel(w.Minutes))).ToArray();
                 var values = windows.Select(w => w == null ? "--" : w.Display(now)).ToArray();
                 var labelWidths = labels.Select(t => TextWidth(g, t, font, sf)).ToArray();
                 var valueWidths = values.Select(t => TextWidth(g, t, number, sf)).ToArray();
                 bool expired = windows.Any(w => w != null && w.Expired(now));
-                string statusText = data == null ? "等待更新" : expired ? "重置待刷新" : "已更新 " + data.At.LocalDateTime.ToString("HH:mm");
-                float textWidth = labelWidths.Sum() + valueWidths.Sum() + separatorWidth + 6 * gap + 2 * padding;
+                string statusText = data == null ? (string.IsNullOrEmpty(status) ? "等待更新" : status) : expired ? "重置待刷新" : "已更新 " + data.At.LocalDateTime.ToString("HH:mm");
+                if (data != null && data.PlanName.Length > 0) statusText = data.PlanName + " · " + statusText;
+                if (data != null && data.CreditsOnly) {
+                    string credits = data.Unlimited ? "积分 无限" : data.Balance == null ? "积分 可用" : "积分 余额 " + data.Balance;
+                    using (var brush = new SolidBrush(Ink(light))) DrawText(g, credits, font, brush, padding, baseline, sf);
+                    float statusX = padding + TextWidth(g, credits, font, sf) + gap;
+                    if (statusX + dotWidth + gap + TextWidth(g, statusText, font, sf) + padding <= width) {
+                        using (var brush = new SolidBrush(Color.FromArgb(70, 189, 150))) g.FillEllipse(brush, statusX, center - 2, dotWidth, dotWidth);
+                        using (var brush = new SolidBrush(Dim(light))) DrawText(g, statusText, font, brush, statusX + dotWidth + gap, baseline, sf);
+                    }
+                    return;
+                }
+                if (windows.Length == 0) return;
+                float textWidth = labelWidths.Sum() + valueWidths.Sum() + separatorWidth * (windows.Length - 1) + (2 * windows.Length + 2 * (windows.Length - 1)) * gap + 2 * padding;
+                if (data == null && !string.IsNullOrEmpty(status)) {
+                    string shortened = statusText;
+                    float available = Math.Max(0, width - textWidth - dotWidth - 2 * gap);
+                    while (shortened.Length > 1 && TextWidth(g, shortened + "…", font, sf) > available) shortened = shortened.Substring(0, shortened.Length - 1);
+                    if (shortened != statusText) statusText = shortened + "…";
+                }
                 float statusWidth = dotWidth + 2 * gap + TextWidth(g, statusText, font, sf);
-                bool showStatus = width >= textWidth + statusWidth + 48;
-                float barWidth = Math.Max(0, (width - textWidth - (showStatus ? statusWidth : 0)) / 2);
+                bool showStatus = width >= textWidth + statusWidth + (data == null && !string.IsNullOrEmpty(status) ? 0 : 24 * windows.Length);
+                float barWidth = Math.Max(0, (width - textWidth - (showStatus ? statusWidth : 0)) / windows.Length);
                 float x = padding;
                 for (int i = 0; i < windows.Length; i++)
                 {
@@ -602,7 +799,7 @@ namespace GptQuotaBar
                     x += barWidth + gap;
                     using (var brush = new SolidBrush(Ink(light))) DrawText(g, values[i], number, brush, x, baseline, sf);
                     x += valueWidths[i];
-                    if (i == 0) {
+                    if (i < windows.Length - 1) {
                         x += gap;
                         using (var pen = new Pen(light ? Color.FromArgb(217, 222, 225) : Color.FromArgb(59, 64, 67))) g.DrawLine(pen, x, center - 8, x, center + 8);
                         x += separatorWidth + gap;
@@ -652,8 +849,8 @@ namespace GptQuotaBar
                     {
                         long now = DateTimeOffset.Now.ToUnixTimeSeconds();
                         using (var sg = Graphics.FromImage(strip)) Paint(sg, 600, 28, 2, new Snapshot {
-                            Five = new QuotaWindow { Used = light ? 75 : 51, Reset = now + 7080 + 50 },
-                            Week = new QuotaWindow { Used = light ? 94 : 52, Reset = now + 4 * 86400 + 3 * 3600 + 50 } }, "", light);
+                            Windows = { new QuotaWindow { Minutes = 300, Used = light ? 75 : 51, Reset = now + 7080 + 50 },
+                            new QuotaWindow { Minutes = 10080, Used = light ? 94 : 52, Reset = now + 4 * 86400 + 3 * 3600 + 50 } } }, "", light);
                         g.DrawImageUnscaled(strip, 0, light ? 88 : 0);
                     }
             }
@@ -743,34 +940,13 @@ namespace GptQuotaBar
         internal static object Diagnose()
         {
             bool running; var windows = FindTargets(out running);
-            var overlayIds = new HashSet<int>(Process.GetProcessesByName("GptQuotaBar").Select(p => { using (p) return p.Id; }));
-            var overlays = new List<object>();
-            var seen = new HashSet<IntPtr>();
-            EnumProc collect = delegate(IntPtr h, IntPtr ignored) {
-                uint pid; GetWindowThreadProcessId(h, out pid);
-                if (!overlayIds.Contains((int)pid) || !seen.Add(h)) return true;
-                var title = new StringBuilder(256); GetWindowText(h, title, title.Capacity);
-                Rect r; GetWindowRect(h, out r);
-                uint affinity; bool affinityKnown = GetWindowDisplayAffinity(h, out affinity);
-                IntPtr covering = GetAncestor(WindowFromPoint(new Point2 { X = (r.Left + r.Right) / 2, Y = (r.Top + r.Bottom) / 2 }), 2);
-                overlays.Add(new { pid = pid, handle = h.ToInt64(), title = title.ToString(), visible = IsWindowVisible(h), cloaked = IsCloaked(h),
-                    parent = GetParent(h).ToInt64(),
-                    dpiMatchesParent = GetParent(h) == IntPtr.Zero || AreDpiAwarenessContextsEqual(GetWindowDpiAwarenessContext(h), GetWindowDpiAwarenessContext(GetParent(h))),
-                    affinity = affinityKnown ? (long)affinity : -1, windowAtCenter = covering.ToInt64(),
-                    style = GetWindowLongPtr(h, -16).ToInt64(), extendedStyle = GetWindowLongPtr(h, -20).ToInt64(),
-                    bounds = new { x = r.Left, y = r.Top, width = r.Right - r.Left, height = r.Bottom - r.Top } });
-                return true;
-            };
-            EnumWindows(collect, IntPtr.Zero);
-            foreach (IntPtr parent in windows) EnumChildWindows(parent, collect, IntPtr.Zero);
-            IntPtr input = OpenInputDesktop(0, false, 1);
-            string inputName = ObjectName(input); if (input != IntPtr.Zero) CloseDesktop(input);
-            return new { desktop = ObjectName(GetThreadDesktop(GetCurrentThreadId())), inputDesktop = inputName, station = ObjectName(GetProcessWindowStation()),
-                desktopRunning = running, foreground = GetForegroundWindow().ToInt64(), windows = windows.Select(h => {
-                Rectangle bounds; float scale; bool fits = TryPlacement(h, out bounds, out scale);
-                return new { handle = h.ToInt64(), dpi = GetDpiForWindow(h), minimized = IsIconic(h), fits = fits, bar = new { x = bounds.X, y = bounds.Y, width = bounds.Width, height = bounds.Height } };
-            }).ToArray(), overlays = overlays, codexExecutableFound = File.Exists(QuotaClient.FindCodex()) };
+            CodexExecutable executable = null; bool rejected = false;
+            try { executable = QuotaClient.FindCodex(); } catch (UntrustedPathException) { rejected = true; } catch { }
+            return new { desktopRunning = running, hostWindowFound = windows.Count > 0,
+                codexExecutableFound = executable != null, codexTrustTier = executable == null ? "" : executable.Tier,
+                pathRejected = rejected };
         }
+
     }
 
     static class Tests
@@ -808,7 +984,55 @@ namespace GptQuotaBar
                     && Native.Layout(new Rectangle(host.Left, host.Top, (int)(1400 * dpi), 800), dpi).Left == b.Left, "fixed anchor beside menu during resize");
                 Check(Native.Layout(new Rectangle(0, 0, (int)(680 * dpi), 600), dpi).IsEmpty, "narrow window hides");
             }
-            Program.Save("test-results.json", new { passed = count, failed = 0, at = DateTimeOffset.Now.ToString("o") });
+            const string plusFixture = @"{""rateLimits"":{""planType"":""plus"",""primary"":{""windowDurationMins"":300,""usedPercent"":10},""secondary"":{""windowDurationMins"":10080,""usedPercent"":40}}}";
+            const string proFixture = @"{""rateLimits"":{""planType"":""pro"",""primary"":{""windowDurationMins"":10080,""usedPercent"":25},""secondary"":null}}";
+            const string reversedFixture = @"{""rateLimits"":{""primary"":{""windowDurationMins"":10080,""usedPercent"":10},""secondary"":{""windowDurationMins"":300,""usedPercent"":20}}}";
+            const string unknownFixture = @"{""rateLimits"":{""planType"":""go"",""primary"":{""windowDurationMins"":1440,""usedPercent"":5}}}";
+            const string unlimitedFixture = @"{""rateLimits"":{""planType"":""pro"",""primary"":null,""secondary"":null,""credits"":{""unlimited"":true}}}";
+            const string creditsFixture = @"{""rateLimits"":{""credits"":{""hasCredits"":true,""balance"":""123.50""}}}";
+            var plus = Snapshot.Parse(Json.Decode(plusFixture));
+            var pro = Snapshot.Parse(Json.Decode(proFixture));
+            var reverse = Snapshot.Parse(Json.Decode(reversedFixture));
+            var go = Snapshot.Parse(Json.Decode(unknownFixture));
+            var unlimited = Snapshot.Parse(Json.Decode(unlimitedFixture));
+            var credits = Snapshot.Parse(Json.Decode(creditsFixture));
+            Check(plus.Windows.Count == 2 && plus.Five.Remaining == 90 && plus.Week.Remaining == 60, "plus two windows");
+            Check(plus.PlanName == "Plus", "plus plan");
+            Check(pro.Windows.Count == 1 && pro.Five == null && pro.Week.Remaining == 75, "pro weekly primary only");
+            Check(pro.PlanName == "Pro" && Snapshot.PeriodLabel(pro.Week.Minutes) == "7d", "pro weekly label");
+            Check(reverse.Windows[0].Minutes == 300 && reverse.Windows[1].Minutes == 10080, "reverse order sorted");
+            Check(go.Windows.Count == 1 && Snapshot.PeriodLabel(go.Windows[0].Minutes) == "1d" && go.PlanName == "Go", "go dynamic daily window");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""planType"":""unknown""}}")).PlanName == "", "unknown plan hidden");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""planType"":""P R O""}}")).Plan == "", "plan whitespace rejected");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""planType"":""pro!""}}")).Plan == "", "plan punctuation rejected");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""planType"":""abcdefghijklmnopqrstuvwxy""}}")).Plan == "", "long plan rejected");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""planType"":""PRO""}}")).PlanName == "Pro", "plan normalized");
+            Check(unlimited.CreditsOnly && unlimited.Unlimited && !unlimited.Empty, "unlimited credits state");
+            Check(credits.CreditsOnly && credits.Balance == "123.50", "string balance");
+            Check(Json.Encode(credits.Export()).Contains("123.50"), "sanitized credit probe export");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""credits"":{""hasCredits"":true,""balance"":12.5}}}")).Balance == "12.5", "numeric balance");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""credits"":{""hasCredits"":true,""balance"":""1e10""}}}")).Balance == null, "invalid balance hidden");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""credits"":{""hasCredits"":true,""balance"":""1234567890123""}}}")).Balance == null, "long balance hidden");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{}}")).Empty, "empty snapshot");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimitsByLimitId"":null,""rateLimits"":{""primary"":{""windowDurationMins"":300,""usedPercent"":1}}}" )).Empty, "present null multi bucket never falls back");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimitsByLimitId"":{""other"":{""credits"":{""unlimited"":true}}}}" )).Empty, "no cross-bucket credits");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""primary"":{""windowDurationMins"":300,""usedPercent"":10},""secondary"":{""windowDurationMins"":300,""usedPercent"":80}}}" )).Windows.Single().Used == 10, "duplicate duration keeps first");
+            Check(Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""primary"":{""windowDurationMins"":0,""usedPercent"":5}}}" )).Empty, "invalid duration rejected");
+            Check(Snapshot.PeriodLabel(300) == "5h", "5h label");
+            Check(Snapshot.PeriodLabel(10080) == "7d", "7d label");
+            Check(Snapshot.PeriodLabel(1440) == "1d", "day label");
+            Check(Snapshot.PeriodLabel(120) == "2h", "hour label");
+            Check(Snapshot.PeriodLabel(45) == "45min", "minute label");
+            Check(Snapshot.PeriodLabel(0) == "", "invalid period label");
+            Check(BarContext.LimitTrayText(new string('x', 200)).Length == 127, "tray text limit");
+            Check(BarContext.LimitTrayText("short") == "short", "short tray text unchanged");
+            var renderStates = new Snapshot[] { null, pro, plus, credits };
+            foreach (var sample in renderStates) {
+                using (var bitmap = new Bitmap(600, 28)) using (var graphics = Graphics.FromImage(bitmap))
+                    Renderer.Paint(graphics, 600, 28, 1, sample, sample == null ? "请重新登录" : "", false);
+                Check(true, "render state bitmap");
+            }
+            Program.SaveBeside("test-results.json", new { passed = count, failed = 0, at = DateTimeOffset.Now.ToString("o") });
         }
         internal static bool RunUi()
         {
@@ -831,7 +1055,7 @@ namespace GptQuotaBar
                             Check(Native.TryPlacement(host.Handle, out bounds, out scale), "normal host placement");
                             Check(bar.AttachTo(host.Handle), "attach child window");
                             bar.Present(bounds, scale);
-                            bar.Data = new Snapshot { Five = new QuotaWindow { Used = 6 }, Week = new QuotaWindow { Used = 21 } };
+                            bar.Data = new Snapshot { Windows = { new QuotaWindow { Minutes = 300, Used = 6 }, new QuotaWindow { Minutes = 10080, Used = 21 } } };
                             report.Add(new { step = "normal", bounds = bounds.ToString(), scale = scale });
                             using (var b = new Bitmap(bar.Width, bar.Height)) { bar.DrawToBitmap(b, bar.ClientRectangle); b.Save(Path.Combine(Program.Folder, "ui-test-preview.png")); }
                         }
@@ -855,14 +1079,14 @@ namespace GptQuotaBar
                             host.WindowState = FormWindowState.Normal; host.Width = 700;
                             Check(!Native.TryPlacement(host.Handle, out bounds, out scale), "narrow host avoids menus");
                             report.Add(new { step = "narrow", pass = true });
-                            Program.Save("ui-test-results.json", new { passed = true, checks = report });
+                            Program.SaveBeside("ui-test-results.json", new { passed = true, checks = report });
                             passed = true;
                             tick.Stop(); host.Close();
                         }
                         step++;
                     }
                     catch (Exception ex) {
-                        Program.Save("ui-test-results.json", new { passed = false, step = step, error = ex.ToString(), checks = report });
+                        Program.SaveBeside("ui-test-results.json", new { passed = false, step = step, error = ex.GetType().Name, checks = report });
                         tick.Stop(); host.Close();
                     }
                 };

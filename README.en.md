@@ -2,7 +2,7 @@
 
 [简体中文](README.md)
 
-A standalone Windows utility that displays Codex subscription quota in the unused top menu area of the ChatGPT / Codex desktop app. This is an unofficial project.
+GPT Quota Bar is a standalone Windows utility that displays Codex subscription quota beside the top menu of the ChatGPT / Codex desktop app. Current version: **1.3.0**. This is not an official OpenAI product.
 
 ## Features
 
@@ -12,73 +12,60 @@ A standalone Windows utility that displays Codex subscription quota in the unuse
 1h58min/5h [progress] 49% | 4d3h/7d [progress] 48% · 已更新 10:40
 ```
 
-- Shows reset countdowns, remaining progress bars and percentages for the 5-hour and 7-day windows, followed by the last successful update time.
-- Uses 12 DIP text and equal-length progress bars beside the host menus. Dark and light themes are available; the interface is currently Chinese.
-- Moves, minimizes and restores with the host. Mouse input passes through without activating the bar. Narrow windows first omit the timestamp, then hide the bar.
-- Supports Windows logon startup. A watcher waits for GPT to open and keeps waiting after GPT closes.
-- Polls every 30 seconds in the foreground and every 5 minutes in the background, alongside quota notifications. Countdown repainting is local, once per second. The tray menu supports immediate refresh.
+- Shows returned quota windows, reset countdowns, remaining percentages and the last successful update time.
+- Displays one or two windows according to the response. A Pro account may return only a weekly window; credit-only accounts show a credit state.
+- Optionally displays a tray notification when a window reaches 10% or less. Each window duration and reset time is notified once per process run.
+- Moves, minimizes and restores with the desktop app; clicks and drags pass through the bar. Dark and light themes are supported.
+- Supports Windows logon startup and tray refresh. Polling is approximately every 30 seconds in the foreground and every 5 minutes in the background; the countdown is updated locally, and reset triggers a refresh.
+- Clears stale values on read failure and shows the status. Narrow windows may omit the status or hide the bar.
 
-These are **Codex subscription limits**, not every ChatGPT model's message limits or API billing. Missing windows and expired quota values display `--`.
+Plus has been verified on the author's current computer. Pro single-window and credit-only responses have been tested with synthetic data, **not a real Pro account**. Go adapts to returned data but **has not been verified with a real Go account**. These are Codex subscription limits, not every ChatGPT model's message limits or API billing.
 
 ## How the code works
 
-The utility uses C#, WinForms and native Windows APIs. Most logic lives in `src/GptQuotaBar.cs`.
+The application uses C#, WinForms and Windows APIs; most logic is in `src/GptQuotaBar.cs`.
 
-1. **Startup and detection:** `StartupTask` registers a current-user Windows logon task. A mutex prevents duplicate instances. `BarContext` manages the tray icon, host detection and bar visibility.
-2. **Quota access:** `QuotaClient` locates the official `codex.exe`, starts `app-server`, and exchanges JSON-RPC over standard input/output. After initialization it calls `account/read` and `account/rateLimits/read`, and handles account and quota notifications. The official CLI manages authentication; this utility does not directly read `auth.json` or request an API key.
-3. **Data and rendering:** `Poller` adjusts polling to foreground/background state and stops its query subprocess when GPT exits. `Snapshot` parses the two quota windows and converts used percentages into remaining percentages. `Renderer` draws countdowns, progress bars and the update timestamp.
-4. **Window attachment:** `BarForm` creates a native child window with matching host DPI awareness. Windows moves it synchronously with the host. Transparent, mouse-pass-through and non-activating styles preserve input behavior. No host installation changes or code injection are required.
+1. **Startup and detection:** `StartupTask` registers the current-user logon task; `BarContext` manages the tray, host detection, display and reset refresh.
+2. **Quota access:** `QuotaClient` starts official `codex.exe app-server` and exchanges requests over standard input/output. The official CLI manages authentication; the utility does not directly read `auth.json`.
+3. **Parsing and drawing:** `Snapshot` selects only the Codex bucket and sorts windows by returned duration. `Renderer` draws remaining quota, credit states, times and errors. Failed reads clear old values.
+4. **Windows and processes:** `BarForm` creates a non-activating native child window with mouse pass-through. Windows moves it with the host. A Job Object attempts to close the query subprocess when the watcher exits.
 
-`src/app.manifest` declares ordinary-user privileges, Windows compatibility and DPI settings. `scripts/` contains build, verification, packaging and launcher scripts.
+The utility searches the explicitly configured executable, desktop bundle and official local installation before `PATH`. A `PATH` candidate must pass Windows trust validation and have OpenAI in the signer subject. Users are responsible for verifying explicitly configured paths.
 
 ## Usage
 
 ### Requirements
 
 - Windows 10 / 11 x64 and .NET Framework 4.8.
-- An installed and signed-in official ChatGPT / Codex desktop app, and official `codex.exe` supporting app-server subscription quota queries. The utility searches the desktop bundle, official install locations and `PATH`.
-- Authentication that returns Codex subscription limits. Run both applications as the same ordinary Windows user.
+- The official ChatGPT / Codex desktop app and official `codex.exe` supporting `app-server`; sign in with your own ChatGPT account.
+- An account and interface response containing Codex quota windows or credit information. Browser, macOS and Linux are not supported by this version.
 
-Only Windows desktop apps are supported. Host menu or protocol changes may require adaptation.
+### Install, update and uninstall
 
-### Install and operate
+1. Download `GptQuotaBar-v1.3.0-windows-x64.zip` from **Releases** and extract it into a permanent folder writable only by the current Windows user.
+2. Run `Install.cmd` to register the current-user logon task and start. Open the desktop app to display the bar.
+3. Right-click the green tray icon to refresh, switch themes, toggle low-quota notifications or exit. The interface is currently Chinese.
 
-1. Download the Windows x64 package from **Releases** and extract it into a permanent writable folder. If no release is available, build a package using the commands below.
-2. Run `Install.cmd` to register the current-user logon task named `GPT Quota Bar` and start immediately. Administrator access and a Windows password are not required.
-3. Open the GPT desktop app. The bar appears in the unused menu area.
-4. Right-click the green tray icon to refresh, change theme or exit.
-
-| Entry point | Action |
+| File | Action |
 | --- | --- |
-| `Install.cmd` | Register logon startup and start now |
+| `Install.cmd` | Register or update logon startup and start now |
 | `Start.cmd` / `GptQuotaBar.exe` | Start once |
 | `Stop.cmd` | Stop now, keeping the logon task |
 | `Uninstall.cmd` | Remove the logon task and stop |
 
-Use these launchers from the extracted runtime package. Before moving the folder, uninstall the task; install again from the new location. To remove everything, uninstall the task and delete the folder.
+To update or move folders, run `Uninstall.cmd` in the old folder, then extract the new package and run its `Install.cmd`. After uninstalling, the runtime folder can be deleted.
 
-If the bar is missing, check the tray icon, host visibility, available menu space and CLI login. To select the CLI manually, open PowerShell in the runtime folder:
+If the bar is missing, check the tray icon, host visibility, available menu space and official CLI login. If necessary, set `GPT_QUOTA_CODEX_PATH` to the full path of the official `codex.exe` in a PowerShell session, then start the utility in that session.
 
-```powershell
-$env:GPT_QUOTA_CODEX_PATH = (Get-Command codex.exe).Source
-.\GptQuotaBar.exe
-```
+### Build and data
 
-If `Get-Command` cannot find it, set the variable to the full path of your official `codex.exe` before starting the utility.
-
-### Run from source
-
-From the repository root in Windows PowerShell 5.1:
+From the repository root:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
-.\artifacts\bin\GptQuotaBar.exe
-```
-
-The build uses the Windows .NET Framework C# compiler without NuGet dependencies. To generate a complete package with the four `.cmd` launchers:
-
-```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
 ```
 
-The package is written to `artifacts/releases/`. Local settings, installation records and diagnostics are stored beside the executable. They may contain private paths, real quota values or window information; do not publish the runtime directory.
+The build uses the Windows .NET Framework C# compiler without NuGet dependencies. The runtime package and checksum are written to `artifacts/releases/`.
+
+Theme, notification preferences and diagnostics are stored under `%LOCALAPPDATA%\GptQuotaBar`, falling back to the executable folder if creation fails. Installation records omit executable paths. Diagnostics and quota snapshots may contain actual usage data and should not be published.

@@ -6,7 +6,7 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-检查所有 PowerShell 脚本语法、公开文件、版本一致性，编译并执行 25 项离线断言。覆盖额度解析、不同周期排序、未知周期和非 Codex 额度桶、布局空间、DPI、固定锚点及倒计时边界。结果在 `artifacts/bin/test-results.json`。
+检查所有 PowerShell 脚本语法、公开文件、版本一致性，编译并执行 59 项离线断言。覆盖单窗口、积分、未知周期、套餐清洗、非 Codex 桶隔离、渲染、布局空间、DPI 和倒计时边界。Go 按接口返回自适应，尚未用真实 Go 账号验证；Pro 真实账号和不同来源的签名验证仍需实测。结果在 `artifacts/bin/test-results.json`。
 
 该过程不安装登录任务、不调用账号接口、不查询额度、不触发模型推理。CI 只使用这个验证及白名单打包。
 
