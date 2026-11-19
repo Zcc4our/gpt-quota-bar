@@ -2,7 +2,7 @@
 
 [简体中文](README.md)
 
-GPT Quota Bar is a standalone Windows utility that displays Codex subscription quota beside the top menu of the ChatGPT / Codex desktop app. Current version: **1.3.0**. This is not an official OpenAI product.
+GPT Quota Bar is a standalone Windows utility that displays Codex subscription quota beside the top menu of the ChatGPT / Codex desktop app. Current version: **1.3.1**. This is not an official OpenAI product.
 
 ## Features
 
@@ -15,7 +15,7 @@ GPT Quota Bar is a standalone Windows utility that displays Codex subscription q
 - Shows returned quota windows, reset countdowns, remaining percentages and the last successful update time.
 - Displays one or two windows according to the response. A Pro account may return only a weekly window; credit-only accounts show a credit state.
 - Optionally displays a tray notification when a window reaches 10% or less. Each window duration and reset time is notified once per process run.
-- Moves, minimizes and restores with the desktop app; clicks and drags pass through the bar. Dark and light themes are supported.
+- Moves, minimizes and restores with the main desktop window; mini companion and tool windows cannot host the bar. Clicks and drags pass through the bar. Dark and light themes are supported.
 - Supports Windows logon startup and tray refresh. Polling is approximately every 30 seconds in the foreground and every 5 minutes in the background; the countdown is updated locally, and reset triggers a refresh.
 - Clears stale values on read failure and shows the status. Narrow windows may omit the status or hide the bar.
 
@@ -42,7 +42,7 @@ The utility searches the explicitly configured executable, desktop bundle and of
 
 ### Install, update and uninstall
 
-1. Download `GptQuotaBar-v1.3.0-windows-x64.zip` from **Releases** and extract it into a permanent folder writable only by the current Windows user.
+1. Download `GptQuotaBar-v1.3.1-windows-x64.zip` from **Releases** and extract it into a permanent folder writable only by the current Windows user.
 2. Run `Install.cmd` to register the current-user logon task and start. Open the desktop app to display the bar.
 3. Right-click the green tray icon to refresh, switch themes, toggle low-quota notifications or exit. The interface is currently Chinese.
 
