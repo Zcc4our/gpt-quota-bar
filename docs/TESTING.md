@@ -6,7 +6,7 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-检查所有 PowerShell 脚本语法、公开文件、版本一致性，编译并执行 59 项离线断言。覆盖单窗口、积分、未知周期、套餐清洗、非 Codex 桶隔离、渲染、布局空间、DPI 和倒计时边界。Go 按接口返回自适应，尚未用真实 Go 账号验证；Pro 真实账号和不同来源的签名验证仍需实测。结果在 `artifacts/bin/test-results.json`。
+检查所有 PowerShell 脚本语法、公开文件、版本一致性，编译并执行 67 项离线断言。覆盖单窗口、积分、未知周期、套餐清洗、非 Codex 桶隔离、渲染、布局空间、DPI 和倒计时边界。Go 按接口返回自适应，尚未用真实 Go 账号验证；Pro 真实账号和不同来源的签名验证仍需实测。结果在 `artifacts/bin/test-results.json`。
 
 该过程不安装登录任务、不调用账号接口、不查询额度、不触发模型推理。CI 只使用这个验证及白名单打包。
 
@@ -20,6 +20,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-interaction.p
 
 检查 30 次显示和更新不抢焦点、30 次鼠标命中穿透、原生子窗口关系、被动隐藏和重新附着，以及 30 次宿主移动时子窗口同步跟随。结果在 `artifacts/tests/results.json`。命中测试不能替代手动点击、输入和拖动验证。
 
+## mini 智能伙伴回归
+
+`GptQuotaBar.exe --ui-test` 使用独立的主窗口和无边框伙伴窗口，验证伙伴窗口始终不合格、主窗口最小化后两者均不能显示额度栏，以及主窗口恢复后重新合格。测试不操作用户的 ChatGPT 窗口。
+
 ## 人工验收
 
 使用自行构建的运行包和自己的账号，在本机确认：
@@ -28,7 +32,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-interaction.p
 2. 额度栏附近可点击菜单、输入文字、拖动宿主，且没有焦点争夺或独立窗口残影。
 3. 移动、最大化、最小化、恢复、调整窗口宽度和跨 DPI 显示器后位置正常。
 4. 前台及后台读取、刷新失败、到达重置时间、账号切换和缺失周期的状态符合 README。
-5. 安装登录任务后重启宿主可重新显示；Windows 重新登录后监听器启动；卸载任务后停止并不再登录启动。
+5. 开启 mini 智能伙伴，最小化全部主窗口：桌面不应出现额度栏；恢复主窗口后只在主窗口显示。
+6. 安装登录任务后重启宿主可重新显示；Windows 重新登录后监听器启动；卸载任务后停止并不再登录启动。
 
 宿主版本或 Windows 版本变化后，应重新进行上述验收。自动离线通过不等于已验证所有宿主版本与显示器组合。
 
