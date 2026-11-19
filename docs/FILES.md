@@ -4,7 +4,7 @@
 
 | 路径 | 内容 |
 | --- | --- |
-| `src/GptQuotaBar.cs` | 当前 1.3.0 应用、额度协议和离线测试源码 |
+| `src/GptQuotaBar.cs` | 当前 1.3.1 应用、额度协议和离线测试源码 |
 | `src/app.manifest` | 版本、普通权限、DPI 和 Windows 兼容性声明 |
 | `scripts/*.ps1` | 构建、公开文件检查、验证、打包和交互测试 |
 | `scripts/*.cmd` | 运行包的启动、停止、安装和卸载模板 |
@@ -20,7 +20,7 @@
 
 ## 仅作为 GitHub Releases 附件
 
-- `GptQuotaBar-v1.3.0-windows-x64.zip`。
+- `GptQuotaBar-v1.3.1-windows-x64.zip`。
 - `SHA256SUMS.txt`。
 - `release-notes.md` 的内容粘贴为 Release 描述即可，无需作为附件。
 
