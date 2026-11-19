@@ -129,7 +129,7 @@ namespace GptQuotaBar
             dynamic folder = service.GetFolder("\\");
             dynamic registered = folder.RegisterTaskDefinition(Name, task, 6, user, null, 3, null);
             registered.Run(null);
-            Program.Save("installation.json", new { mechanism = "Windows Task Scheduler", task = Name, version = "1.3.0" });
+            Program.Save("installation.json", new { mechanism = "Windows Task Scheduler", task = Name, version = "1.3.1" });
         }
         internal static void Remove()
         {
@@ -340,7 +340,7 @@ namespace GptQuotaBar
             new Thread(ReadLoop) { IsBackground = true }.Start();
             Process started = child;
             new Thread((ThreadStart)delegate { try { while (started.StandardError.ReadLine() != null) { } } catch { } }) { IsBackground = true }.Start();
-            await Rpc("initialize", new { clientInfo = new { name = "gpt_quota_bar", title = "GPT Quota Bar", version = "1.3.0" } });
+            await Rpc("initialize", new { clientInfo = new { name = "gpt_quota_bar", title = "GPT Quota Bar", version = "1.3.1" } });
             Send(new { method = "initialized", @params = new { } });
         }
         internal async Task<Snapshot> Read()
@@ -616,7 +616,7 @@ namespace GptQuotaBar
             IntPtr target = targets.Contains(fg) ? fg : targets.Contains(previous) ? previous : targets.FirstOrDefault();
             previous = target;
             bool active = fg == target || (target != IntPtr.Zero && Native.GetAncestor(fg, 3) == target);
-            bool visible = target != IntPtr.Zero && Native.IsWindowVisible(target) && !Native.IsIconic(target) && !Native.IsCloaked(target);
+            bool visible = Native.CanDisplayQuota(target);
             Rectangle bounds;
             float scale;
             visible = visible && Native.TryPlacement(target, out bounds, out scale);
@@ -896,6 +896,21 @@ namespace GptQuotaBar
         [DllImport("user32.dll")] internal static extern bool DestroyIcon(IntPtr handle);
         [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
         internal static bool IsCloaked(IntPtr hwnd) { int value; return DwmGetWindowAttribute(hwnd, 14, out value, 4) == 0 && value != 0; }
+        internal static bool IsMainWindowStyle(long style, long extendedStyle)
+        {
+            // Mini/companion windows can share the main window's title and class.
+            return (style & 0x40000000) == 0 && (style & 0x00C00000) == 0x00C00000
+                && (style & 0x00020000) != 0 && (extendedStyle & 0x00000080) == 0;
+        }
+        internal static bool IsMainWindow(IntPtr window)
+        {
+            return window != IntPtr.Zero && IsWindow(window)
+                && IsMainWindowStyle(GetWindowLongPtr(window, -16).ToInt64(), GetWindowLongPtr(window, -20).ToInt64());
+        }
+        internal static bool CanDisplayQuota(IntPtr window)
+        {
+            return IsMainWindow(window) && IsWindowVisible(window) && !IsIconic(window) && !IsCloaked(window);
+        }
         internal static List<IntPtr> FindTargets(out bool running)
         {
             var ids = new HashSet<int>();
@@ -914,7 +929,7 @@ namespace GptQuotaBar
                 uint pid; GetWindowThreadProcessId(h, out pid);
                 if (!ids.Contains((int)pid)) return true;
                 var c = new StringBuilder(128); GetClassName(h, c, c.Capacity);
-                if (c.ToString().StartsWith("Chrome_WidgetWin", StringComparison.Ordinal) && IsWindowVisible(h) && !IsCloaked(h)) windows.Add(h);
+                if (c.ToString().StartsWith("Chrome_WidgetWin", StringComparison.Ordinal) && IsMainWindow(h) && IsWindowVisible(h) && !IsCloaked(h)) windows.Add(h);
                 return true;
             }, IntPtr.Zero);
             return windows;
@@ -952,7 +967,8 @@ namespace GptQuotaBar
     static class Tests
     {
         static int count;
-        static void Check(bool ok, string name) { if (!ok) throw new InvalidOperationException(name); count++; }
+        static string lastCheck;
+        static void Check(bool ok, string name) { lastCheck = name; if (!ok) throw new InvalidOperationException(name); count++; }
         internal static void Run()
         {
             var s = Snapshot.Parse(Json.Decode(@"{""rateLimits"":{""primary"":{""windowDurationMins"":300,""usedPercent"":0},""secondary"":{""windowDurationMins"":10080,""usedPercent"":20}}}"));
@@ -1026,6 +1042,14 @@ namespace GptQuotaBar
             Check(Snapshot.PeriodLabel(0) == "", "invalid period label");
             Check(BarContext.LimitTrayText(new string('x', 200)).Length == 127, "tray text limit");
             Check(BarContext.LimitTrayText("short") == "short", "short tray text unchanged");
+            Check(Native.IsMainWindowStyle(0x14C70000, 0x240100), "desktop main window is eligible");
+            Check(!Native.IsMainWindowStyle(0x14000000, 0x2800A8), "mini companion is excluded despite matching title and class");
+            Check(!Native.IsMainWindowStyle(0x14000000, 0), "frameless companion excluded without tool flag");
+            Check(!Native.IsMainWindowStyle(0x14C70000, 0x80), "tool window excluded even with a main-style frame");
+            Check(Native.IsMainWindowStyle(0x15C70000, 0x240100), "maximized main window retains identity");
+            Check(Native.IsMainWindowStyle(0x34C70000, 0x240100), "minimized main window retains identity for restore");
+            Check(!Native.IsMainWindowStyle(0x54C70000, 0x240100), "child window cannot host quota");
+            Check(!Native.IsMainWindowStyle(0x14C50000, 0x240100), "auxiliary window without minimize box excluded");
             var renderStates = new Snapshot[] { null, pro, plus, credits };
             foreach (var sample in renderStates) {
                 using (var bitmap = new Bitmap(600, 28)) using (var graphics = Graphics.FromImage(bitmap))
@@ -1041,6 +1065,8 @@ namespace GptQuotaBar
             bool passed = false;
             using (var host = new Form { Text = "GPT Quota Bar - layout test", StartPosition = FormStartPosition.Manual,
                 Bounds = new Rectangle(120, 120, 1300, 700), BackColor = Color.FromArgb(24, 24, 24) })
+            using (var mini = new Form { Text = "GPT Quota Bar - layout test", FormBorderStyle = FormBorderStyle.None,
+                ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Bounds = new Rectangle(120, 850, 1300, 120) })
             using (var bar = new BarForm())
             using (var tick = new System.Windows.Forms.Timer { Interval = 500 })
             {
@@ -1052,6 +1078,12 @@ namespace GptQuotaBar
                         Rectangle bounds; float scale;
                         if (step == 0)
                         {
+                            // Explicitly show our fixture even when the test process was started hidden.
+                            Native.SetWindowPos(host.Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0040);
+                            mini.Show();
+                            Check(Native.CanDisplayQuota(host.Handle), "normal main window accepts quota");
+                            Check(Native.IsWindowVisible(mini.Handle) && !Native.CanDisplayQuota(mini.Handle), "large companion window cannot host quota");
+                            report.Add(new { step = "main-versus-companion", pass = true });
                             Check(Native.TryPlacement(host.Handle, out bounds, out scale), "normal host placement");
                             Check(bar.AttachTo(host.Handle), "attach child window");
                             bar.Present(bounds, scale);
@@ -1071,12 +1103,17 @@ namespace GptQuotaBar
                         {
                             host.WindowState = FormWindowState.Minimized;
                             Check(Native.IsIconic(host.Handle), "minimized host detected");
+                            Check(Native.IsWindowVisible(mini.Handle) && !Native.CanDisplayQuota(host.Handle) && !Native.CanDisplayQuota(mini.Handle), "minimized main plus visible companion offers no quota host");
+                            report.Add(new { step = "minimized-main-with-companion", pass = true });
                             bar.HidePassive(); Check(!Native.IsWindowVisible(bar.Handle), "hidden on minimize");
                             report.Add(new { step = "minimize", pass = true });
                         }
                         if (step == 3)
                         {
-                            host.WindowState = FormWindowState.Normal; host.Width = 700;
+                            host.WindowState = FormWindowState.Normal;
+                            Check(Native.CanDisplayQuota(host.Handle) && !Native.CanDisplayQuota(mini.Handle), "restored main alone accepts quota");
+                            report.Add(new { step = "restore-main-with-companion", pass = true });
+                            host.Width = 700;
                             Check(!Native.TryPlacement(host.Handle, out bounds, out scale), "narrow host avoids menus");
                             report.Add(new { step = "narrow", pass = true });
                             Program.SaveBeside("ui-test-results.json", new { passed = true, checks = report });
@@ -1086,7 +1123,7 @@ namespace GptQuotaBar
                         step++;
                     }
                     catch (Exception ex) {
-                        Program.SaveBeside("ui-test-results.json", new { passed = false, step = step, error = ex.GetType().Name, checks = report });
+                        Program.SaveBeside("ui-test-results.json", new { passed = false, step = step, error = ex.GetType().Name, check = lastCheck, checks = report });
                         tick.Stop(); host.Close();
                     }
                 };
